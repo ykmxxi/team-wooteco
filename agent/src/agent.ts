@@ -296,6 +296,7 @@ async function main() {
         allowDangerouslySkipPermissions: true, // Required when using bypassPermissions
         cwd: workspace,
         resume: sessionIdToResume,
+        settingSources: ["user", "project"], // Load ~/.claude/CLAUDE.md, skills, and project settings
       },
     })) {
       // Debug: Log each message type from query
