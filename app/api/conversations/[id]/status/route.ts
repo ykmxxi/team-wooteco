@@ -38,8 +38,11 @@ export async function POST(
       },
     });
 
-    // Kill the sandbox if we have an ID
+    // Wait for volume to sync before killing the sandbox.
+    // The agent runs `sync` before calling this callback, but we add an
+    // extra delay as a safety margin for JuiceFS writeback upload to GCS.
     if (conversation.sandboxId) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       await killSandbox(conversation.sandboxId);
     }
 

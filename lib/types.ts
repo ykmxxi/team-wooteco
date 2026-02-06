@@ -1,5 +1,17 @@
 /**
- * Claude Code Session Types (simplified from maru)
+ * Claude Code Session Types (v2.1.1)
+ *
+ * Simplified subset of types for rendering Claude Code session messages.
+ * Full types are auto-generated from the JSON Schema definitions at:
+ *   https://github.com/moru-ai/agent-schemas/claude-code/v2.1.1/session.schema.json
+ *
+ * Complete TypeScript types live in the maru monorepo:
+ *   ~/moru/maru/packages/types/src/claude-code/session.ts
+ *
+ * This file contains only the types needed for the hackathon starter's
+ * message rendering components. The full schema supports additional
+ * message types (SummaryMessage, FileHistorySnapshot, QueueOperation)
+ * and richer metadata (version, cwd, gitBranch, todos, etc.).
  */
 
 // ============================================================================
@@ -79,7 +91,7 @@ export interface AssistantMessagePayload {
   type: "message";
   role: "assistant";
   content: ContentBlock[];
-  stop_reason: "end_turn" | "tool_use" | "max_tokens" | null;
+  stop_reason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | null;
   stop_sequence: string | null;
   usage: UsageInfo;
 }

@@ -7,7 +7,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI (required by Claude Agent SDK)
-RUN npm install -g @anthropic-ai/claude-code
+# Pin to specific version to match session schema types
+RUN npm install -g @anthropic-ai/claude-code@2.1.1
 
 # Install Claude Agent SDK and TypeScript tooling
 RUN npm install -g @anthropic-ai/claude-agent-sdk typescript tsx
@@ -32,6 +33,9 @@ RUN mkdir -p /home/user/.claude
 # Copy Claude Code credentials
 COPY .credentials.json /home/user/.claude/.credentials.json
 RUN chmod 600 /home/user/.claude/.credentials.json
+
+# Copy .claude config (CLAUDE.md, skills, etc.)
+COPY .claude/ /home/user/.claude/
 
 # Set ownership
 RUN chown -R node:node /workspace /home/user/.claude /app

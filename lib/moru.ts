@@ -1,6 +1,6 @@
-import Sandbox, { Volume, type CommandHandle } from "@moru-ai/core";
+import Sandbox, { Volume } from "@moru-ai/core";
 
-const TEMPLATE_NAME = "hackathon-ts-agent";
+const TEMPLATE_NAME = "moru-hackathon-agent";
 
 /**
  * Create a new volume for a conversation
@@ -18,22 +18,26 @@ export async function getVolume(volumeId: string) {
 }
 
 /**
- * Create a sandbox with the agent template.
+ * Create a sandbox and launch the agent in a fully detached (fire-and-forget) way.
  *
- * The agent code is pre-installed in the template at /app/agent.mts
- * (similar to maru's Python agent pattern).
+ * ARCHITECTURE NOTE: We do NOT use `background: true` or `sendStdin()` because
+ * those maintain a gRPC streaming connection from the Vercel function to the sandbox.
+ * When the Vercel function returns and gets frozen/GC'd, the Moru server detects
+ * the disconnected stream and kills the agent process — even if `disconnect()` is called.
  *
- * Claude Code credentials are embedded in the template at ~/.claude/.credentials.json
- * (extracted from macOS Keychain during template build).
+ * Instead, we:
+ * 1. Write the input messages to a file inside the sandbox
+ * 2. Launch the agent with `nohup` piping from that file, fully backgrounded
+ * 3. All `commands.run()` calls are foreground (complete quickly, no streaming)
+ * 4. The agent runs independently — no gRPC connection to maintain
  */
-export async function createSandbox(
+export async function createAndLaunchAgent(
   volumeId: string,
   conversationId: string,
+  content: string,
   sessionId?: string
-): Promise<{ sandbox: Sandbox; commandHandle: CommandHandle }> {
+): Promise<{ sandboxId: string }> {
   const baseUrl = process.env.BASE_URL || "http://localhost:3000";
-  // Note: ANTHROPIC_API_KEY not needed - template has embedded Claude Code credentials
-  // const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
 
   const sandbox = await Sandbox.create(TEMPLATE_NAME, {
     volumeId,
@@ -42,9 +46,6 @@ export async function createSandbox(
   });
 
   // Create symlink ~/.claude -> /workspace/data/.claude so session files persist to volume
-  // This ensures Claude Code sessions are stored in the volume and can be read back
-  // IMPORTANT: Copy credentials first before removing ~/.claude, then create symlink
-  // NOTE: Use `cp -a /home/user/.claude/. dest/` to copy hidden files (glob * doesn't match .files)
   await sandbox.commands.run(
     "mkdir -p /workspace/data/.claude && " +
     "cp -a /home/user/.claude/. /workspace/data/.claude/ && " +
@@ -52,46 +53,22 @@ export async function createSandbox(
     "ln -sf /workspace/data/.claude /home/user/.claude"
   );
 
-  // Start the pre-installed agent - it reads from stdin (matching maru pattern)
-  // Pass envs to commands.run() like maru does in agent-session.ts
-  const commandHandle = await sandbox.commands.run(
-    "cd /app && npx tsx agent.mts",
-    {
-      background: true,
-      stdin: true,
-      cwd: "/workspace/data",
-      // Pass environment variables to the agent process (matching maru pattern)
-      envs: {
-        // Note: Using embedded Claude Code credentials instead of API key
-        // ANTHROPIC_API_KEY: anthropicApiKey,
-        WORKSPACE_DIR: "/workspace/data",
-        CALLBACK_URL: `${baseUrl}/api/conversations/${conversationId}/status`,
-        RESUME_SESSION_ID: sessionId || "",
-      },
-      // Match maru's 30-minute timeout for agent sessions
-      timeoutMs: 30 * 60 * 1000,
-      // Log agent output for debugging
-      onStdout: (data: string) => {
-        console.log(`[AGENT stdout] ${data}`);
-      },
-      onStderr: (data: string) => {
-        console.error(`[AGENT stderr] ${data}`);
-      },
-    }
+  // Write input messages to a file (the agent reads process_start + session_message from stdin)
+  const processStart = JSON.stringify({ type: "process_start", session_id: sessionId || undefined });
+  const sessionMessage = JSON.stringify({ type: "session_message", text: content });
+
+  await sandbox.commands.run(
+    `printf '%s\\n%s\\n' '${processStart.replace(/'/g, "'\\''")}' '${sessionMessage.replace(/'/g, "'\\''")}' > /tmp/agent_input.txt`
   );
 
-  return { sandbox, commandHandle };
-}
+  // Launch agent fully detached with nohup — no streaming connection maintained.
+  // The agent reads from the input file, runs query(), and calls CALLBACK_URL when done.
+  const callbackUrl = `${baseUrl}/api/conversations/${conversationId}/status`;
+  await sandbox.commands.run(
+    `nohup bash -c 'cd /workspace/data && WORKSPACE_DIR=/workspace/data CALLBACK_URL="${callbackUrl}" RESUME_SESSION_ID="${sessionId || ""}" npx tsx /app/agent.mts < /tmp/agent_input.txt >> /tmp/agent_stdout.log 2>> /tmp/agent_stderr.log' &>/dev/null &`
+  );
 
-/**
- * Send a message to the sandbox agent via stdin
- */
-export async function sendToAgent(
-  sandbox: Sandbox,
-  pid: number,
-  message: Record<string, unknown>
-) {
-  await sandbox.commands.sendStdin(pid, JSON.stringify(message) + "\n");
+  return { sandboxId: sandbox.sandboxId };
 }
 
 export interface FileInfo {

@@ -14,6 +14,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import * as readline from "readline";
 import * as fs from "fs";
 import * as path from "path";
+import { execSync } from "child_process";
 
 // Debug logging helper
 function debug(msg: string, data?: any): void {
@@ -115,6 +116,20 @@ class LineReader {
     return new Promise((resolve) => {
       this.resolvers.push(resolve);
     });
+  }
+}
+
+/**
+ * Flush filesystem buffers so JuiceFS uploads pending writes to object storage.
+ * Must be called before the callback so the session JSONL is readable via the volume API.
+ */
+function flushVolume(): void {
+  try {
+    debug("Flushing volume (sync)...");
+    execSync("sync", { timeout: 10_000 });
+    debug("Volume flush complete");
+  } catch (e) {
+    debug("Volume flush failed (non-fatal)", { error: String(e) });
   }
 }
 
@@ -272,7 +287,11 @@ async function main() {
     for await (const message of query({
       prompt,
       options: {
-        allowedTools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+        allowedTools: [
+          "Read", "Write", "Edit", "Bash", "Grep", "Glob",
+          "WebSearch", "WebFetch", "TodoWrite", "Task",
+        ],
+        maxTurns: 50,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true, // Required when using bypassPermissions
         cwd: workspace,
@@ -307,7 +326,8 @@ async function main() {
           },
         });
 
-        // Call callback with success
+        // Flush volume before callback so session JSONL is persisted
+        flushVolume();
         await callCallback("completed", currentSessionId);
       }
     }
@@ -325,12 +345,14 @@ async function main() {
           num_turns: 0,
         },
       });
+      flushVolume();
       await callCallback("completed", currentSessionId);
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("[AGENT] Exception:", errorMessage);
     emit({ type: "process_error", message: errorMessage });
+    flushVolume();
     await callCallback("error", undefined, errorMessage);
   } finally {
     rl.close();

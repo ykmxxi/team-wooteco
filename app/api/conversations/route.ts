@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import {
   createVolume,
-  createSandbox,
-  sendToAgent,
+  createAndLaunchAgent,
 } from "@/lib/moru";
 import type { SendMessageRequest, SendMessageResponse } from "@/lib/types";
 
@@ -65,10 +64,11 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Create sandbox and start agent
-    const { sandbox, commandHandle } = await createSandbox(
+    // Create sandbox and launch agent (fire-and-forget, no streaming connection)
+    const { sandboxId } = await createAndLaunchAgent(
       volumeId,
       conversation.id,
+      content,
       sessionId
     );
 
@@ -77,23 +77,8 @@ export async function POST(request: NextRequest) {
       where: { id: conversation.id },
       data: {
         status: "running",
-        sandboxId: sandbox.sandboxId,
+        sandboxId,
       },
-    });
-
-    // Send process_start command
-    await sendToAgent(sandbox, commandHandle.pid, {
-      type: "process_start",
-      session_id: sessionId,
-    });
-
-    // Wait a bit for process to initialize
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    // Send the user message
-    await sendToAgent(sandbox, commandHandle.pid, {
-      type: "session_message",
-      text: content,
     });
 
     const response: SendMessageResponse = {

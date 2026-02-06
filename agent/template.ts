@@ -23,7 +23,7 @@ import { Template } from "@moru-ai/core";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function buildTemplate() {
-  const templateAlias = "hackathon-ts-agent";
+  const templateAlias = "moru-hackathon-agent";
 
   console.log("=".repeat(50));
   console.log("Building Hackathon TypeScript Agent Template");
@@ -32,7 +32,7 @@ async function buildTemplate() {
 
   const template = Template()
     .fromDockerfile(path.join(__dirname, "Dockerfile"))
-    .setStartCmd("claude --version");
+    .setStartCmd("echo ok");
 
   const buildInfo = await Template.build(template, {
     alias: templateAlias,

@@ -30,9 +30,45 @@ export default function Home() {
   const [showWorkspace, setShowWorkspace] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Track post-completion poll attempts to avoid infinite polling
+  const postCompletionPollsRef = useRef(0);
+
+  // Extract text from a user message content (handles both string and ContentBlock[]).
+  const getUserMessageText = useCallback((content: string | unknown[]): string => {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((b: any) => b.type === "text" && b.text)
+        .map((b: any) => b.text)
+        .join("\n");
+    }
+    return "";
+  }, []);
+
+  // Check if a pending message has a matching user message in server data.
+  // Used to remove pending messages once the server confirms them.
+  const hasPendingMatch = useCallback(
+    (pending: PendingMessage, serverMsgs: SessionEntry[]) => {
+      return serverMsgs.some(
+        (m) =>
+          m.type === "user" &&
+          getUserMessageText(m.message.content) === pending.content
+      );
+    },
+    [getUserMessageText]
+  );
+
   // Polling for conversation updates
+  // Keeps polling while "running", and also after "completed"/"error" if
+  // pending messages haven't appeared in server data yet (volume sync delay).
   useEffect(() => {
-    if (!conversationId || status !== "running") return;
+    if (!conversationId) return;
+
+    const isDone = status === "completed" || status === "error";
+
+    // Stop polling once done AND all pending messages are resolved (or retries exhausted)
+    if (isDone && (pendingMessages.length === 0 || postCompletionPollsRef.current >= 10)) return;
+    if (!isDone && status !== "running") return;
 
     const pollInterval = setInterval(async () => {
       try {
@@ -43,10 +79,17 @@ export default function Home() {
           // Update server messages
           setServerMessages(data.messages);
 
-          // Clear all pending messages when session completes
-          // (all user messages should now be in the session file)
+          // Remove only the pending messages that now appear in server data.
+          // This handles both first-turn (no prior messages) and multi-turn
+          // (prior messages exist but new ones haven't synced yet).
+          if (data.messages.length > 0) {
+            setPendingMessages((prev) =>
+              prev.filter((p) => !hasPendingMatch(p, data.messages))
+            );
+          }
+
           if (data.status === "completed" || data.status === "error") {
-            setPendingMessages([]);
+            postCompletionPollsRef.current++;
           }
 
           setStatus(data.status);
@@ -59,7 +102,7 @@ export default function Home() {
     }, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [conversationId, status]);
+  }, [conversationId, status, pendingMessages.length, hasPendingMatch]);
 
   // Compute combined messages: server messages + pending messages as SessionEntry
   const messages: SessionEntry[] = [
@@ -87,6 +130,7 @@ export default function Home() {
     async (content: string) => {
       setIsSubmitting(true);
       setErrorMessage(null);
+      postCompletionPollsRef.current = 0;
 
       // Add pending message immediately for optimistic UI
       const pendingId = `pending-${Date.now()}`;
