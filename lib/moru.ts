@@ -65,7 +65,7 @@ export async function createAndLaunchAgent(
   // The agent reads from the input file, runs query(), and calls CALLBACK_URL when done.
   const callbackUrl = `${baseUrl}/api/conversations/${conversationId}/status`;
   await sandbox.commands.run(
-    `nohup bash -c 'cd /workspace/data && WORKSPACE_DIR=/workspace/data CALLBACK_URL="${callbackUrl}" RESUME_SESSION_ID="${sessionId || ""}" ANTHROPIC_API_KEY="${process.env.ANTHROPIC_API_KEY || ""}" npx tsx /app/agent.mts < /tmp/agent_input.txt >> /tmp/agent_stdout.log 2>> /tmp/agent_stderr.log' &>/dev/null &`
+    `nohup bash -c 'cd /workspace/data && WORKSPACE_DIR=/workspace/data CALLBACK_URL="${callbackUrl}" RESUME_SESSION_ID="${sessionId || ""}" ANTHROPIC_API_KEY="${process.env.ANTHROPIC_API_KEY || ""}" YOUTUBE_API_KEY="${process.env.YOUTUBE_API_KEY || ""}" npx tsx /app/agent.mts < /tmp/agent_input.txt >> /tmp/agent_stdout.log 2>> /tmp/agent_stderr.log' &>/dev/null &`
   );
 
   return { sandboxId: sandbox.sandboxId };

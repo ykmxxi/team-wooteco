@@ -43,6 +43,7 @@ RUN git config --system init.defaultBranch main && \
 # Set environment
 ENV HOME=/home/user
 ENV NODE_ENV=production
+ENV YOUTUBE_API_KEY=""
 
 WORKDIR /home/user
 USER node
