@@ -30,10 +30,6 @@ RUN mkdir -p /workspace && chmod 777 /workspace
 # Create user home and .claude directories
 RUN mkdir -p /home/user/.claude
 
-# Copy Claude Code credentials
-COPY .credentials.json /home/user/.claude/.credentials.json
-RUN chmod 600 /home/user/.claude/.credentials.json
-
 # Copy .claude config (CLAUDE.md, skills, etc.)
 COPY .claude/ /home/user/.claude/
 
