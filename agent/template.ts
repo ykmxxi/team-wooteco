@@ -23,7 +23,7 @@ import { Template } from "@moru-ai/core";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function buildTemplate() {
-  const templateAlias = "moru-hackathon-agent";
+  const templateAlias = "team-wooteco";
 
   console.log("=".repeat(50));
   console.log("Building Hackathon TypeScript Agent Template");
