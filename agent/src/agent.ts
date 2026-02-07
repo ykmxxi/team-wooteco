@@ -10,7 +10,8 @@
  * 5. On completion/error, call CALLBACK_URL to update status
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
 import * as readline from "readline";
 import * as fs from "fs";
 import * as path from "path";
@@ -159,6 +160,275 @@ async function callCallback(status: "completed" | "error", sessionId?: string, e
   }
 }
 
+// ─── YouTube API Types ───────────────────────────────────────────────
+
+interface YouTubeVideoResult {
+  title: string;
+  channel: string;
+  url: string;
+  views: number;
+  likes: number;
+  published_at: string;
+  duration: string;
+  description_snippet: string;
+}
+
+interface YouTubePlaylistResult {
+  title: string;
+  channel: string;
+  url: string;
+  video_count: number;
+  published_at: string;
+  description_snippet: string;
+}
+
+// ─── YouTube API Helpers ─────────────────────────────────────────────
+
+async function searchYouTubeVideos(params: {
+  query: string;
+  language?: string;
+  max_results?: number;
+  video_duration?: string;
+}): Promise<YouTubeVideoResult[]> {
+  try {
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    if (!apiKey) {
+      console.error("[YouTube] YOUTUBE_API_KEY not set");
+      return [];
+    }
+
+    // Step 1: search.list (type=video)
+    const searchParams = new URLSearchParams({
+      part: "snippet",
+      type: "video",
+      q: params.query,
+      maxResults: String(params.max_results || 5),
+      order: "relevance",
+      key: apiKey,
+    });
+    if (params.language && params.language !== "any") {
+      searchParams.set("relevanceLanguage", params.language);
+    }
+    if (params.video_duration && params.video_duration !== "any") {
+      searchParams.set("videoDuration", params.video_duration);
+    }
+
+    const searchRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?${searchParams}`
+    );
+    if (!searchRes.ok) {
+      console.error(`[YouTube] search.list failed: ${searchRes.status}`);
+      return [];
+    }
+    const searchData = await searchRes.json();
+    const items = searchData.items || [];
+    if (items.length === 0) return [];
+
+    const videoIds = items.map((i: any) => i.id.videoId).join(",");
+
+    // Step 2: videos.list (statistics + contentDetails)
+    const videosRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?${new URLSearchParams({
+        part: "snippet,statistics,contentDetails",
+        id: videoIds,
+        key: apiKey,
+      })}`
+    );
+    if (!videosRes.ok) {
+      console.error(`[YouTube] videos.list failed: ${videosRes.status}`);
+      return [];
+    }
+    const videosData = await videosRes.json();
+    const videoDetails = new Map<string, any>();
+    for (const v of videosData.items || []) {
+      videoDetails.set(v.id, v);
+    }
+
+    // Merge results
+    return items.map((item: any) => {
+      const videoId = item.id.videoId;
+      const detail = videoDetails.get(videoId);
+      return {
+        title: item.snippet.title,
+        channel: item.snippet.channelTitle,
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        views: detail ? Number(detail.statistics?.viewCount || 0) : 0,
+        likes: detail ? Number(detail.statistics?.likeCount || 0) : 0,
+        published_at: item.snippet.publishedAt,
+        duration: detail?.contentDetails?.duration || "unknown",
+        description_snippet: (item.snippet.description || "").slice(0, 200),
+      };
+    });
+  } catch (error) {
+    console.error("[YouTube] searchYouTubeVideos error:", error);
+    return [];
+  }
+}
+
+async function searchYouTubePlaylists(params: {
+  query: string;
+  language?: string;
+  max_results?: number;
+}): Promise<YouTubePlaylistResult[]> {
+  try {
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    if (!apiKey) {
+      console.error("[YouTube] YOUTUBE_API_KEY not set");
+      return [];
+    }
+
+    // Step 1: search.list (type=playlist)
+    const searchParams = new URLSearchParams({
+      part: "snippet",
+      type: "playlist",
+      q: params.query,
+      maxResults: String(params.max_results || 3),
+      order: "relevance",
+      key: apiKey,
+    });
+    if (params.language && params.language !== "any") {
+      searchParams.set("relevanceLanguage", params.language);
+    }
+
+    const searchRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?${searchParams}`
+    );
+    if (!searchRes.ok) {
+      console.error(`[YouTube] search.list (playlist) failed: ${searchRes.status}`);
+      return [];
+    }
+    const searchData = await searchRes.json();
+    const items = searchData.items || [];
+    if (items.length === 0) return [];
+
+    const playlistIds = items.map((i: any) => i.id.playlistId).join(",");
+
+    // Step 2: playlists.list (contentDetails for videoCount)
+    const playlistsRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/playlists?${new URLSearchParams({
+        part: "snippet,contentDetails",
+        id: playlistIds,
+        key: apiKey,
+      })}`
+    );
+    if (!playlistsRes.ok) {
+      console.error(`[YouTube] playlists.list failed: ${playlistsRes.status}`);
+      return [];
+    }
+    const playlistsData = await playlistsRes.json();
+    const playlistDetails = new Map<string, any>();
+    for (const p of playlistsData.items || []) {
+      playlistDetails.set(p.id, p);
+    }
+
+    // Merge results
+    return items.map((item: any) => {
+      const playlistId = item.id.playlistId;
+      const detail = playlistDetails.get(playlistId);
+      return {
+        title: item.snippet.title,
+        channel: item.snippet.channelTitle,
+        url: `https://www.youtube.com/playlist?list=${playlistId}`,
+        video_count: detail?.contentDetails?.itemCount || 0,
+        published_at: item.snippet.publishedAt,
+        description_snippet: (item.snippet.description || "").slice(0, 200),
+      };
+    });
+  } catch (error) {
+    console.error("[YouTube] searchYouTubePlaylists error:", error);
+    return [];
+  }
+}
+
+// ─── MCP Server (YouTube Tools) ─────────────────────────────────────
+
+const youtubeServer = createSdkMcpServer({
+  name: "youtube-tools",
+  version: "1.0.0",
+  tools: [
+    tool(
+      "youtube_search",
+      "YouTube에서 학습 영상을 검색합니다. 커리큘럼 단계별 키워드로 호출하세요.",
+      z.object({
+        query: z.string().describe("검색 키워드 (예: '쿠버네티스 입문 강의')"),
+        language: z.enum(["ko", "en", "any"]).default("any").describe("콘텐츠 언어 필터"),
+        max_results: z.number().default(5).describe("최대 결과 수"),
+        video_duration: z.enum(["short", "medium", "long", "any"]).default("any").describe("영상 길이 필터"),
+      }),
+      async (args) => {
+        const results = await searchYouTubeVideos(args);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }],
+        };
+      }
+    ),
+    tool(
+      "youtube_playlist_search",
+      "YouTube에서 학습 플레이리스트를 검색합니다. 시리즈 강의를 찾을 때 사용하세요.",
+      z.object({
+        query: z.string().describe("검색 키워드"),
+        language: z.enum(["ko", "en", "any"]).default("any").describe("콘텐츠 언어 필터"),
+        max_results: z.number().default(3).describe("최대 결과 수"),
+      }),
+      async (args) => {
+        const results = await searchYouTubePlaylists(args);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }],
+        };
+      }
+    ),
+  ],
+});
+
+// ─── System Prompt ──────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `당신은 유튜브 학습 로드맵 큐레이터입니다.
+
+사용자가 배우고 싶은 주제를 입력하면, 다음 순서로 맞춤형 학습 로드맵을 생성하세요.
+모든 단계를 한 번에 수행하여 최종 로드맵까지 완성합니다. 사용자에게 추가 질문하지 마세요.
+
+## 1단계: 사용자 프로필 추정
+- 메시지에서 현재 수준, 목표, 배경 지식을 추정합니다
+- 정보가 부족하면 합리적으로 가정합니다 (중급 개발자, 실무 적용 목표 등)
+- 추정한 프로필을 먼저 간단히 공유합니다
+
+## 2단계: 커리큘럼 뼈대 설계
+- 선수 지식 갭을 분석합니다
+- 3~5단계로 구성합니다: 필요시 선수 보충 → 입문 → 핸즈온 → 심화 → 실무
+- 각 단계별 서브 토픽 2~3개를 정합니다
+
+## 3단계: 유튜브 콘텐츠 탐색
+- youtube_search, youtube_playlist_search tool을 사용하여 실제 검색합니다
+- 각 단계별로 적절한 한국어/영어 키워드로 검색합니다
+- 플레이리스트를 먼저 찾고, 부족하면 단일 영상으로 보완합니다
+- 각 단계별 메인 추천 1개 + 대안 1개를 선정합니다
+
+## 4단계: 로드맵 생성
+- 마크다운 형식으로 최종 로드맵을 작성합니다
+- Write tool을 사용하여 /workspace/data/roadmap.md 에 저장합니다
+- 채팅에도 로드맵 전체를 보여줍니다
+
+로드맵에 포함할 항목:
+- 대상 프로필 요약
+- 예상 총 학습 시간 및 기간
+- 단계별 추천 콘텐츠 (제목, 채널, URL, 조회수, 재생시간)
+- 각 단계 완료 후 체크포인트 (실습 과제)
+- 메인 추천과 대안 추천 구분
+
+## 출력 형식 예시
+
+각 단계별로 다음과 같이 구성합니다:
+
+### 🟢 1단계: [단계명] (N주차)
+**메인 추천**
+- 📺 [제목](URL) - 채널명 | 조회수 N만 | ⏱️ N시간
+**대안**
+- 📺 [제목](URL) - 채널명 | 조회수 N만 | ⏱️ N시간
+**체크포인트**: [실습 과제 설명]
+`;
+
+// ─── Main ───────────────────────────────────────────────────────────
+
 async function main() {
   const workspace = process.env.WORKSPACE_DIR || process.cwd();
   const resumeSessionId = process.env.RESUME_SESSION_ID || undefined;
@@ -291,6 +561,10 @@ async function main() {
           "Read", "Write", "Edit", "Bash", "Grep", "Glob",
           "WebSearch", "WebFetch", "TodoWrite", "Task",
         ],
+        mcpServers: {
+          "youtube-tools": youtubeServer,
+        },
+        systemPrompt: SYSTEM_PROMPT,
         maxTurns: 50,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true, // Required when using bypassPermissions
