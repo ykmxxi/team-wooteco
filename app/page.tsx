@@ -36,6 +36,9 @@ export default function Home() {
   // Guard against concurrent polling requests (Fix 1: Concurrent Request Guard)
   const isPollingRef = useRef(false);
 
+  // Track previous poll data for accurate change detection (avoids stale closure)
+  const prevPollDataRef = useRef({ status: "", messagesLength: 0 });
+
   // Extract text from a user message content (handles both string and ContentBlock[]).
   const getUserMessageText = useCallback((content: string | unknown[]): string => {
     if (typeof content === "string") return content;
@@ -100,10 +103,13 @@ export default function Home() {
           setStatus(data.status);
           setErrorMessage(data.errorMessage || null);
 
-          // Fix 2: 데이터 변경 시에만 refreshTrigger 증가 (불필요한 files API 호출 방지)
-          if (data.status !== status || data.messages.length !== serverMessages.length) {
-            setRefreshTrigger((prev) => prev + 1);
+          // 이전 poll 데이터와 비교하여 변경 시에만 refreshTrigger 증가
+          // (stale closure 방지를 위해 ref 사용)
+          const prev = prevPollDataRef.current;
+          if (data.status !== prev.status || data.messages.length !== prev.messagesLength) {
+            setRefreshTrigger((r) => r + 1);
           }
+          prevPollDataRef.current = { status: data.status, messagesLength: data.messages.length };
         }
       } catch (error) {
         console.error("Polling error:", error);
@@ -114,6 +120,19 @@ export default function Home() {
 
     return () => clearInterval(pollInterval);
   }, [conversationId, status, pendingMessages.length, hasPendingMatch]);
+
+  // 에이전트 완료 후 volume sync 지연을 고려한 추가 workspace 새로고침
+  // status callback에서 3초 대기 후 sandbox kill → 파일이 volume API에 반영되기까지 시간 필요
+  useEffect(() => {
+    if (status !== "completed" && status !== "error") return;
+
+    const timers = [
+      setTimeout(() => setRefreshTrigger((r) => r + 1), 2000),
+      setTimeout(() => setRefreshTrigger((r) => r + 1), 5000),
+    ];
+
+    return () => timers.forEach(clearTimeout);
+  }, [status]);
 
   // Compute combined messages: server messages + pending messages as SessionEntry
   const messages: SessionEntry[] = [
