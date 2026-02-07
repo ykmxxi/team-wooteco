@@ -11,7 +11,7 @@ RUN apt-get update && \
 RUN npm install -g @anthropic-ai/claude-code@2.1.1
 
 # Install Claude Agent SDK and TypeScript tooling
-RUN npm install -g @anthropic-ai/claude-agent-sdk typescript tsx
+RUN npm install -g @anthropic-ai/claude-agent-sdk typescript tsx zod
 
 # Verify installations
 RUN node --version && npm --version && claude --version && tsc --version
