@@ -340,10 +340,74 @@ async function searchYouTubePlaylists(params: {
   }
 }
 
-// ─── MCP Server (YouTube Tools) ─────────────────────────────────────
+// ─── Inflearn Types ─────────────────────────────────────────────────
 
-const youtubeServer = createSdkMcpServer({
-  name: "youtube-tools",
+interface InfLearnCourseResult {
+  title: string;
+  instructor: string;
+  url: string;
+  price: number;
+  regular_price: number;
+  discount_rate: number;
+  is_free: boolean;
+  rating: number;
+  student_count: number;
+  description_snippet: string;
+}
+
+// ─── Inflearn API Helper ────────────────────────────────────────────
+
+async function searchInflearn(params: {
+  query: string;
+  max_results?: number;
+}): Promise<InfLearnCourseResult[]> {
+  try {
+    const url = `https://www.inflearn.com/courses?s=${encodeURIComponent(params.query)}`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html",
+      },
+    });
+    if (!res.ok) return [];
+
+    const html = await res.text();
+
+    const match = html.match(
+      /<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s
+    );
+    if (!match) return [];
+
+    const nextData = JSON.parse(match[1]);
+    const queries = nextData?.props?.pageProps?.dehydratedState?.queries;
+    if (!queries || queries.length < 2) return [];
+
+    const items = queries[1]?.state?.data?.items || [];
+    const maxResults = params.max_results || 3;
+
+    return items.slice(0, maxResults).map((item: any) => ({
+      title: item.course?.title || "",
+      instructor: item.instructor?.name || "",
+      url: `https://www.inflearn.com/course/${item.course?.slug}`,
+      price: item.listPrice?.payPrice || 0,
+      regular_price: item.listPrice?.regularPrice || 0,
+      discount_rate: item.listPrice?.discountRate || 0,
+      is_free: item.listPrice?.isFree || false,
+      rating: item.course?.star || 0,
+      student_count: item.course?.studentCount || 0,
+      description_snippet: (item.course?.description || "").slice(0, 200),
+    }));
+  } catch (error) {
+    console.error("[Inflearn] searchInflearn error:", error);
+    return [];
+  }
+}
+
+// ─── MCP Server (Learning Tools) ────────────────────────────────────
+
+const learningToolsServer = createSdkMcpServer({
+  name: "learning-tools",
   version: "1.0.0",
   tools: [
     tool(
@@ -377,12 +441,26 @@ const youtubeServer = createSdkMcpServer({
         };
       }
     ),
+    tool(
+      "inflearn_search",
+      "인프런에서 온라인 강의를 검색합니다. 커리큘럼 키워드로 유사 유료 강의를 찾을 때 사용하세요.",
+      z.object({
+        query: z.string().describe("검색 키워드 (예: 'Spring Boot 입문')"),
+        max_results: z.number().default(3).describe("최대 결과 수"),
+      }),
+      async (args) => {
+        const results = await searchInflearn(args);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }],
+        };
+      }
+    ),
   ],
 });
 
 // ─── System Prompt ──────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `당신은 유튜브 학습 로드맵 큐레이터입니다.
+const SYSTEM_PROMPT = `당신은 학습 로드맵 큐레이터입니다.
 
 사용자가 배우고 싶은 주제를 입력하면, 다음 순서로 맞춤형 학습 로드맵을 생성하세요.
 모든 단계를 한 번에 수행하여 최종 로드맵까지 완성합니다. 사용자에게 추가 질문하지 마세요.
@@ -403,6 +481,14 @@ const SYSTEM_PROMPT = `당신은 유튜브 학습 로드맵 큐레이터입니�
 - 플레이리스트를 먼저 찾고, 부족하면 단일 영상으로 보완합니다
 - 각 단계별 메인 추천 1개 + 대안 1개를 선정합니다
 
+## 3.5단계: 유료 강의 플랫폼 탐색
+- 각 커리큘럼 단계의 핵심 키워드로 인프런/유데미를 검색합니다
+- **인프런**: inflearn_search tool을 사용하여 검색합니다
+- **유데미**: WebSearch tool로 "site:udemy.com {키워드} 강의" 형태로 검색합니다
+- 각 단계별로 관련 유료 강의가 있으면 1~2개를 선정합니다
+- 유료 강의는 가격, 평점, 수강생 수를 기준으로 선정합니다
+- 관련 강의를 찾지 못하면 해당 단계는 건너뜁니다
+
 ## 4단계: 로드맵 생성
 - 마크다운 형식으로 최종 로드맵을 작성합니다
 - Write tool을 사용하여 /workspace/data/roadmap.md 에 저장합니다
@@ -412,6 +498,7 @@ const SYSTEM_PROMPT = `당신은 유튜브 학습 로드맵 큐레이터입니�
 - 대상 프로필 요약
 - 예상 총 학습 시간 및 기간
 - 단계별 추천 콘텐츠 (제목, 채널, URL, 조회수, 재생시간)
+- 단계별 유료 강의 추천 (인프런/유데미, 가격, 평점, 수강생 수)
 - 각 단계 완료 후 체크포인트 (실습 과제)
 - 메인 추천과 대안 추천 구분
 
@@ -420,10 +507,15 @@ const SYSTEM_PROMPT = `당신은 유튜브 학습 로드맵 큐레이터입니�
 각 단계별로 다음과 같이 구성합니다:
 
 ### 🟢 1단계: [단계명] (N주차)
-**메인 추천**
+**유튜브 추천**
 - 📺 [제목](URL) - 채널명 | 조회수 N만 | ⏱️ N시간
 **대안**
 - 📺 [제목](URL) - 채널명 | 조회수 N만 | ⏱️ N시간
+
+**📚 유료 강의 추천** *(선택사항)*
+- 🎓 [인프런] [제목](URL) - 강사명 | ⭐ N.N | 수강생 N명 | 💰 N원 (N% 할인)
+- 🎓 [유데미] [제목](URL) - 강사명 | ⭐ N.N
+
 **체크포인트**: [실습 과제 설명]
 `;
 
@@ -562,7 +654,7 @@ async function main() {
           "WebSearch", "WebFetch", "TodoWrite", "Task",
         ],
         mcpServers: {
-          "youtube-tools": youtubeServer,
+          "learning-tools": learningToolsServer,
         },
         systemPrompt: SYSTEM_PROMPT,
         maxTurns: 50,
