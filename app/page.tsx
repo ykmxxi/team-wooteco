@@ -33,6 +33,9 @@ export default function Home() {
   // Track post-completion poll attempts to avoid infinite polling
   const postCompletionPollsRef = useRef(0);
 
+  // Guard against concurrent polling requests (Fix 1: Concurrent Request Guard)
+  const isPollingRef = useRef(false);
+
   // Extract text from a user message content (handles both string and ContentBlock[]).
   const getUserMessageText = useCallback((content: string | unknown[]): string => {
     if (typeof content === "string") return content;
@@ -71,6 +74,8 @@ export default function Home() {
     if (!isDone && status !== "running") return;
 
     const pollInterval = setInterval(async () => {
+      if (isPollingRef.current) return; // 이전 요청 진행 중이면 skip
+      isPollingRef.current = true;
       try {
         const response = await fetch(`/api/conversations/${conversationId}`);
         if (response.ok) {
@@ -94,10 +99,16 @@ export default function Home() {
 
           setStatus(data.status);
           setErrorMessage(data.errorMessage || null);
-          setRefreshTrigger((prev) => prev + 1);
+
+          // Fix 2: 데이터 변경 시에만 refreshTrigger 증가 (불필요한 files API 호출 방지)
+          if (data.status !== status || data.messages.length !== serverMessages.length) {
+            setRefreshTrigger((prev) => prev + 1);
+          }
         }
       } catch (error) {
         console.error("Polling error:", error);
+      } finally {
+        isPollingRef.current = false;
       }
     }, 2000);
 
